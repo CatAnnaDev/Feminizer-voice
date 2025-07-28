@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 pub struct FrequencyData {
     pub dominant_frequency: f32,
     pub amplitude: f32,
+    pub spectrum: Vec<f32>,
 }
 
 pub struct AudioProcessor {
@@ -143,6 +144,8 @@ impl FrequencyProcessor {
         None
     }
 
+
+
     fn analyze_frequency(&mut self) -> FrequencyData {
         let windowed: Vec<Complex<f32>> = self
             .buffer
@@ -159,6 +162,13 @@ impl FrequencyProcessor {
             .iter()
             .map(|c| c.norm())
             .collect();
+
+        let max_val = spectrum.iter().copied().fold(0.0_f32, f32::max);
+        let normalized_spectrum = if max_val > 0.0 {
+            spectrum.iter().map(|x| x / max_val).collect()
+        } else {
+            vec![0.0; spectrum.len()]
+        };
 
         let min_bin = (50.0 * self.buffer_size as f32 / self.sample_rate) as usize;
         let max_bin = (450.0 * self.buffer_size as f32 / self.sample_rate) as usize;
@@ -201,6 +211,7 @@ impl FrequencyProcessor {
                 0.0
             },
             amplitude,
+            spectrum: normalized_spectrum,
         }
     }
 }

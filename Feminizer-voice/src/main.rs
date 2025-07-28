@@ -1,7 +1,9 @@
 use eframe::egui;
-use egui_plot::{Line, Plot, PlotPoints};
+use egui_plot::{Line, Plot, PlotItem, PlotPoints, Text};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use egui::ecolor::Hsva;
+use egui::StrokeKind;
 
 mod audio_processor;
 use audio_processor::{AudioProcessor, FrequencyData};
@@ -31,6 +33,7 @@ struct VoiceFrequencyApp {
     frequency_data: Arc<Mutex<Option<FrequencyData>>>,
     error_message: Option<String>,
     min_amplitude_threshold: f32,
+    spectrum_history: VecDeque<Vec<f32>>
 }
 
 impl Default for VoiceFrequencyApp {
@@ -45,6 +48,8 @@ impl Default for VoiceFrequencyApp {
             frequency_data: Arc::new(Mutex::new(None)),
             error_message: None,
             min_amplitude_threshold: 0.0200,
+            spectrum_history: Default::default(),
+
         }
     }
 }
@@ -97,15 +102,22 @@ impl VoiceFrequencyApp {
                 if filtered_frequency > 0.0 {
                     self.frequency_history.push_back(filtered_frequency);
                     self.amplitude_history.push_back(data.amplitude);
+                    self.spectrum_history.push_back(data.spectrum.clone());
+
                 } else {
                     self.frequency_history.push_back(0.0);
                     self.amplitude_history.push_back(0.0);
+                    self.spectrum_history.push_back(vec![0.0; 512]); // silence
+
                 }
 
                 if self.frequency_history.len() > 100 {
                     self.frequency_history.pop_front();
                     self.amplitude_history.pop_front();
+
+                    self.spectrum_history.pop_front();
                 }
+
                 return true;
             }
         }
@@ -162,6 +174,38 @@ impl VoiceFrequencyApp {
         }
 
         format!("{} (~{:.1}Hz)", closest_note, freq)
+    }
+
+    fn draw_frequency_labels(&self, painter: &egui::Painter, rect: egui::Rect, min_bin: usize, max_bin: usize, freq_per_bin: f32) {
+        let text_color = egui::Color32::WHITE;
+        let font_id = egui::FontId::monospace(10.0);
+
+        let freq_marks = [50.0, 100.0, 200.0, 300.0, 400.0, 500.0];
+
+        for &freq in &freq_marks {
+            if freq >= 50.0 && freq <= 500.0 {
+                let bin_index = (freq / freq_per_bin) as usize;
+                if bin_index >= min_bin && bin_index < max_bin {
+                    let relative_bin = bin_index - min_bin;
+                    let filtered_bins = max_bin - min_bin;
+
+                    let y = rect.bottom() - ((relative_bin as f32 / filtered_bins as f32) * rect.height());
+
+                    painter.line_segment(
+                        [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
+                        egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(255, 255, 255, 80)),
+                    );
+
+                    painter.text(
+                        egui::pos2(rect.left() + 2.0, y - 6.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{}Hz", freq as i32),
+                        font_id.clone(),
+                        text_color,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -263,13 +307,12 @@ impl eframe::App for VoiceFrequencyApp {
             if !self.frequency_history.is_empty() {
                 ui.label("📈 Historique des fréquences:");
 
-                ui.label("🔷 Fréquences graves (80-160 Hz):");
-                let low_freq_points: PlotPoints = self
+                let freq_points: PlotPoints = self
                     .frequency_history
                     .iter()
                     .enumerate()
                     .filter_map(|(i, &freq)| {
-                        if freq >= 50.0 && freq <= 160.0 {
+                        if freq >= 50.0 && freq <= 500.0 {
                             Some([i as f64, freq as f64])
                         } else {
                             None
@@ -277,67 +320,22 @@ impl eframe::App for VoiceFrequencyApp {
                     })
                     .collect();
 
-                Plot::new("low_frequency_plot")
+                let size = ui.available_size_before_wrap();
+
+                Plot::new("frequency_plot")
                     .view_aspect(2.0)
-                    .height(200.0)
+                    .width(size.y*2.0)
+                    .height(size.x/4.0)
                     .y_axis_label("Fréquence (Hz)")
                     .x_axis_label("Temps (échantillons)")
-                    .include_y(50.0)// 80.0
-                    .include_y(160.0)
+                    .include_y(50.0)
+                    .include_y(500.0)
                     .allow_zoom(false)
                     .allow_drag(false)
                     .show(ui, |plot_ui| {
-                        if !low_freq_points.points().is_empty() {
+                        if !freq_points.points().is_empty() {
                             plot_ui.line(
-                                Line::new("", low_freq_points)
-                                    .color(egui::Color32::LIGHT_BLUE)
-                                    .width(2.0),
-                            );
-                        }
-
-                        plot_ui.hline(
-                            egui_plot::HLine::new("", 80.0)
-                                .color(egui::Color32::BLUE)
-                                .style(egui_plot::LineStyle::Solid)
-                                .width(1.0),
-                        );
-                        plot_ui.hline(
-                            egui_plot::HLine::new("", 160.0)
-                                .color(egui::Color32::BLUE)
-                                .style(egui_plot::LineStyle::Solid)
-                                .width(1.0),
-                        );
-                    });
-
-                ui.add_space(10.0);
-
-                ui.label("🔸 Fréquences aiguës (180-310 Hz):");
-                let high_freq_points: PlotPoints = self
-                    .frequency_history
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, &freq)| {
-                        if freq >= 180.0 && freq <= 500.0 {
-                            Some([i as f64, freq as f64])
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                Plot::new("high_frequency_plot")
-                    .view_aspect(2.0)
-                    .height(200.0)
-                    .y_axis_label("Fréquence (Hz)")
-                    .x_axis_label("Temps (échantillons)")
-                    .include_y(180.0)
-                    .include_y(500.0) //310.0
-                    .allow_zoom(false)
-                    .allow_drag(false)
-                    .show(ui, |plot_ui| {
-                        if !high_freq_points.points().is_empty() {
-                            plot_ui.line(
-                                Line::new("", high_freq_points)
+                                Line::new("freq_points", freq_points)
                                     .color(egui::Color32::from_rgb(255, 0, 255))
                                     .width(2.0),
                             );
@@ -355,11 +353,72 @@ impl eframe::App for VoiceFrequencyApp {
                                 .style(egui_plot::LineStyle::Solid)
                                 .width(1.0),
                         );
+
+                        plot_ui.hline(
+                            egui_plot::HLine::new("", 80.0)
+                                .color(egui::Color32::BLUE)
+                                .style(egui_plot::LineStyle::Solid)
+                                .width(1.0),
+                        );
+                        plot_ui.hline(
+                            egui_plot::HLine::new("", 160.0)
+                                .color(egui::Color32::BLUE)
+                                .style(egui_plot::LineStyle::Solid)
+                                .width(1.0),
+                        );
                     });
             }
 
             ui.separator();
-            ui.small("Plages: Graves 80-160 Hz (bleu) | Aiguës 180-310 Hz (rose)");
+            ui.small("Plages: Graves 80-160 Hz | Aiguës 180-310 Hz");
+
+            if !self.spectrum_history.is_empty() {
+                let desired_width = ui.available_width();
+                let height = 200.0;
+
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(desired_width, height),
+                    egui::Sense::hover(),
+                );
+
+                let painter = ui.painter_at(rect);
+                let history_len = self.spectrum_history.len();
+                let total_bins = self.spectrum_history[0].len();
+
+                let sample_rate = 48000.0;
+                let freq_per_bin = sample_rate / (2.0 * total_bins as f32);
+                let min_bin = (50.0 / freq_per_bin) as usize;
+                let max_bin = (500.0 / freq_per_bin).min(total_bins as f32) as usize;
+                let filtered_bins = max_bin - min_bin;
+
+                painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
+
+                for (t, spectrum) in self.spectrum_history.iter().enumerate() {
+                    for (f_idx, &amp) in spectrum[min_bin..max_bin].iter().enumerate() {
+                        let norm_amp = amp.sqrt();
+
+                        let hue = (1.0 - norm_amp) * 0.7;
+                        let color = egui::Color32::from(Hsva::new(hue, 1.0, norm_amp, 1.0));
+
+                        let x = rect.left() + (t as f32 / history_len as f32) * rect.width();
+                        let y = rect.bottom() - ((f_idx as f32 / filtered_bins as f32) * rect.height());
+
+                        let cell_width = (rect.width() / history_len as f32).max(1.0);
+                        let cell_height = (rect.height() / filtered_bins as f32).max(1.0);
+
+                        let cell = egui::Rect::from_min_size(
+                            egui::pos2(x, y - cell_height),
+                            egui::vec2(cell_width, cell_height),
+                        );
+
+                        painter.rect_filled(cell, 0.0, color);
+                    }
+                }
+
+                self.draw_frequency_labels(&painter, rect, min_bin, max_bin, freq_per_bin);
+            }
+
+
         });
 
         if self.is_recording {
